@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>POI-selectie langs route</title>
 <meta name="description" content="Kies een GPX-route en maak een CSV met alle EuroPoi-POI's binnen de gekozen afstand.">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,800&family=JetBrains+Mono:wght@400;600&display=swap">
 <style>
@@ -55,6 +56,9 @@ button:disabled{opacity:.45;cursor:not-allowed}
 .summary{display:flex;gap:24px;flex-wrap:wrap;align-items:baseline}
 .summary b{font-family:var(--mono);font-size:1.6rem;font-variant-numeric:tabular-nums}
 .summary span{color:var(--muted);font-size:.85rem;display:block}
+#lmap{height:460px;z-index:0}
+@media (max-width:820px){#lmap{height:360px}}
+.leaflet-popup-content{font-family:var(--body);font-size:.88rem;line-height:1.4;margin:10px 12px}
 .map{width:100%;height:auto;max-height:420px;background:var(--bg);border:1px solid var(--line);border-radius:8px;display:block}
 .tablewrap{overflow-x:auto;border:1px solid var(--line);border-radius:8px}
 table{border-collapse:collapse;width:100%;font-size:.85rem}
@@ -135,8 +139,9 @@ pre.csv{font-family:var(--mono);font-size:.72rem;background:var(--bg);border:1px
       <div><b id="sumAll">0</b><span>POI's geladen</span></div>
       <div><b id="sumKm">0</b><span>km route</span></div>
     </div>
+    <div class="map" id="lmap" role="region" aria-label="Kaart van de route met POI's" hidden></div>
     <svg class="map" id="map" viewBox="0 0 800 420" role="img" aria-label="Schets van de route met POI's"></svg>
-    <div class="legend"><span><i style="background:var(--route)"></i>route</span><span><i style="background:var(--accent)"></i>binnen afstand</span><span><i style="background:var(--out)"></i>verder weg</span></div>
+    <div class="legend"><span><i style="background:var(--route)"></i>route</span><span><i style="background:var(--accent)"></i>binnen afstand</span><span><i style="background:var(--out)"></i>verder weg</span><span>klik op een stip voor de naam</span></div>
     <div class="row">
       <button class="primary" id="dlBtn" type="button">CSV voor EuroPoi opslaan</button>
       <button class="secondary" id="copyBtn" type="button">CSV kopiëren</button>
@@ -191,6 +196,7 @@ pre.csv{font-family:var(--mono);font-size:.72rem;background:var(--bg);border:1px
 </section>
 </div>
 
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script>
 /* ---------- voorbeelddata: route Almen (Wikiloc) + 4 verzonnen voorbeeld-POI's ---------- */
@@ -294,7 +300,30 @@ function buildCsv(){const cat=$("catName").value.trim(),keep=$("keepCat").checke
   lines.push(euroRow(r,keep&&r.category?r.category:cat));}
  return "﻿"+lines.join("\r\n")+"\r\n";}
 function esc(s){return String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));}
-function draw(){const svg=$("map"),W=800,H=420,pad=20;svg.innerHTML="";if(!S.route)return;
+/* ---------- OSM-kaart (Leaflet); valt terug op de SVG-schets als Leaflet niet laadt ---------- */
+const LM={map:null,buf:null,layer:null,routeKey:null};
+function mPerPx(z,lat){return 40075016.686*Math.cos(lat*rad)/Math.pow(2,z+8);}
+function bufWeight(){const c=LM.map.getCenter();return Math.max(2,2*S.maxD/mPerPx(LM.map.getZoom(),c.lat));}
+function drawLeaflet(){
+ if(!LM.map){LM.map=L.map("lmap",{scrollWheelZoom:false}).setView([52.2,5.5],7);
+  L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png",{maxZoom:19,attribution:'&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a>'}).addTo(LM.map);
+  L.control.scale({imperial:false}).addTo(LM.map);
+  LM.layer=L.layerGroup().addTo(LM.map);
+  LM.map.on("zoomend",()=>{if(LM.buf)LM.buf.setStyle({weight:bufWeight()});});}
+ LM.layer.clearLayers();LM.buf=null;if(!S.route)return;
+ const css=getComputedStyle(document.documentElement),col=n=>css.getPropertyValue(n).trim();
+ const key=S.route.pts.length+"|"+S.route.pts[0]+"|"+S.route.length;
+ if(LM.routeKey!==key){LM.map.invalidateSize();LM.map.fitBounds(L.latLngBounds(S.route.pts),{padding:[24,24]});LM.routeKey=key;}
+ LM.buf=L.polyline(S.route.pts,{color:col("--accent"),opacity:.2,weight:bufWeight(),lineCap:"round",lineJoin:"round",interactive:false}).addTo(LM.layer);
+ L.polyline(S.route.pts,{color:col("--route"),weight:3,opacity:.95,interactive:false}).addTo(LM.layer);
+ const ins=[],outs=[];for(const r of S.results)(r.d<=S.maxD?ins:outs).push(r);
+ for(const r of outs.concat(ins)){const inn=r.d<=S.maxD;
+  L.circleMarker([r.lat,r.lng],{radius:inn?7:5,color:"#ffffff",weight:1.5,fillColor:inn?col("--accent"):col("--out"),fillOpacity:1})
+   .bindPopup(`<b>${esc(r.name||"(zonder naam)")}</b><br>${Math.round(r.d).toLocaleString("nl-NL")} m van de route, na ${(r.along/1000).toFixed(1).replace(".",",")} km<br><span style="font-family:var(--mono);font-size:.8rem">${esc(r.pluscode)}</span>${inn?"":"<br><i>Valt buiten de gekozen afstand</i>"}`)
+   .addTo(LM.layer);}}
+function draw(){if(window.L){try{$("lmap").hidden=false;$("map").hidden=true;drawLeaflet();return;}catch(e){console.error(e);}}
+ $("lmap").hidden=true;$("map").hidden=false;drawSvg();}
+function drawSvg(){const svg=$("map"),W=800,H=420,pad=20;svg.innerHTML="";if(!S.route)return;
  const all=S.route.pts.concat(S.results.filter(r=>r.d<=Math.max(S.maxD*3,3000)).map(r=>[r.lat,r.lng]));
  let minLa=Infinity,maxLa=-Infinity,minLo=Infinity,maxLo=-Infinity;for(const [a,b] of all){minLa=Math.min(minLa,a);maxLa=Math.max(maxLa,a);minLo=Math.min(minLo,b);maxLo=Math.max(maxLo,b);}
  const kx=Math.cos((minLa+maxLa)/2*rad),w=(maxLo-minLo)*kx||1e-4,h=(maxLa-minLa)||1e-4,s=Math.min((W-2*pad)/w,(H-2*pad)/h);
